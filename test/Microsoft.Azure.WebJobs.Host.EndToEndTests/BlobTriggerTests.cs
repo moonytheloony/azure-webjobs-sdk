@@ -9,6 +9,8 @@ using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.TestCommon;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Blob;
+using Microsoft.WindowsAzure.Storage.Queue;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Microsoft.Azure.WebJobs.Host.EndToEndTests
@@ -45,6 +47,13 @@ namespace Microsoft.Azure.WebJobs.Host.EndToEndTests
             _testContainer.Create();
         }
 
+        public static void PoisonBlobTrigger(
+            [StorageAccount("SecondaryStorage")]
+            [BlobTrigger(ContainerName + "/{name}")] string input)
+        {
+            throw new Exception();
+        }
+
         public static void SingleBlobTrigger([BlobTrigger(ContainerName + "/{name}")] string sleepTimeInSeconds)
         {
             Interlocked.Increment(ref _timesProcessed);
@@ -53,11 +62,6 @@ namespace Microsoft.Azure.WebJobs.Host.EndToEndTests
             Thread.Sleep(sleepTime);
 
             _blobProcessedEvent.Set();
-        }
-
-        public static void PoisonBlobTrigger([BlobTrigger(ContainerName + "/{name}"), StorageAccount("SecondaryStorage")] string input)
-        {
-            throw new Exception();
         }
 
         public void Dispose()
@@ -70,17 +74,27 @@ namespace Microsoft.Azure.WebJobs.Host.EndToEndTests
         }
 
         [Fact]
-        public void PoisonQueue_CreatedOnTriggerStorage()
+        public async Task PoisonQueue_CreatedOnTriggerStorage()
         {
             TextWriter hold = Console.Out;
             StringWriter consoleOutput = new StringWriter();
             Console.SetOut(consoleOutput);
 
             CloudStorageAccount secondary = CloudStorageAccount.Parse(Environment.GetEnvironmentVariable("AzureWebJobsSecondaryStorage"));
-            var client = secondary.CreateCloudBlobClient();
-            var container = client.GetContainerReference(_nameResolver.ResolveInString(ContainerName));
+            var secondaryBlobClient = secondary.CreateCloudBlobClient();
+            var secondaryQueueClient = secondary.CreateCloudQueueClient();
+            var secondaryPoisonQueue = secondaryQueueClient.GetQueueReference("webjobs-blobtrigger-poison");
+            var containerName = _nameResolver.ResolveInString(ContainerName);
+            var container = secondaryBlobClient.GetContainerReference(containerName);
             container.Create();
-            CloudBlockBlob blob = container.GetBlockBlobReference(BlobName);
+
+            if (secondaryPoisonQueue.Exists())
+            {
+                secondaryPoisonQueue.Clear();
+            }
+
+            var blobName = Guid.NewGuid().ToString();
+            CloudBlockBlob blob = container.GetBlockBlobReference(blobName);
             blob.UploadText("0");
 
             // Process the blob first
@@ -90,7 +104,28 @@ namespace Microsoft.Azure.WebJobs.Host.EndToEndTests
 
                 host.Start();
 
-                Task.Delay(20000).GetAwaiter().GetResult();
+                CloudQueueMessage poisonMessage = null;
+                await TestHelpers.Await(() =>
+                {
+                    if (!secondaryPoisonQueue.Exists())
+                    {
+                        return false;
+                    }
+
+                    while ((poisonMessage = secondaryPoisonQueue.GetMessage()) != null)
+                    {
+                        JObject messageContent = JObject.Parse(poisonMessage.AsString);
+                        if (containerName == (string)messageContent["ContainerName"] &&
+                            blobName == (string)messageContent["BlobName"])
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                });
+
+                Assert.NotNull(poisonMessage);
 
                 host.Stop();
             }

@@ -51,7 +51,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues
         /// <summary>
         /// Event raised when a message is added to the poison queue.
         /// </summary>
-        public event EventHandler MessageAddedToPoisonQueue;
+        public event EventHandler<PoisonMessageEventArgs> MessageAddedToPoisonQueue;
 
         /// <summary>
         /// Gets or sets the number of queue messages to retrieve and process in parallel.
@@ -97,7 +97,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues
             {
                 if (message.DequeueCount >= _maxDequeueCount)
                 {
-                    await CopyMessageToPoisonQueueAsync(message, cancellationToken);
+                    await CopyMessageToPoisonQueueAsync(message, _poisonQueue, cancellationToken);
                     await DeleteMessageAsync(message, cancellationToken);
                 }
                 else
@@ -117,15 +117,17 @@ namespace Microsoft.Azure.WebJobs.Host.Queues
         /// Moves the specified message to the poison queue.
         /// </summary>
         /// <param name="message">The poison message</param>
+        /// <param name="poisonQueue">The poison queue to copy the message to</param>
         /// <param name="cancellationToken">The <see cref="CancellationToken"/> to use</param>
         /// <returns></returns>
-        protected virtual async Task CopyMessageToPoisonQueueAsync(CloudQueueMessage message, CancellationToken cancellationToken)
+        protected virtual async Task CopyMessageToPoisonQueueAsync(CloudQueueMessage message, CloudQueue poisonQueue, CancellationToken cancellationToken)
         {
-            _trace.Warning(string.Format(CultureInfo.InvariantCulture, "Message has reached MaxDequeueCount of {0}. Moving message to queue '{1}'.", _maxDequeueCount, _poisonQueue.Name), TraceSource.Execution);
+            _trace.Warning(string.Format(CultureInfo.InvariantCulture, "Message has reached MaxDequeueCount of {0}. Moving message to queue '{1}'.", _maxDequeueCount, poisonQueue.Name), TraceSource.Execution);
 
-            await AddMessageAndCreateIfNotExistsAsync(_poisonQueue, message, cancellationToken);
+            await AddMessageAndCreateIfNotExistsAsync(poisonQueue, message, cancellationToken);
 
-            OnMessageAddedToPoisonQueue(EventArgs.Empty);
+            var eventArgs = new PoisonMessageEventArgs(message, poisonQueue);
+            OnMessageAddedToPoisonQueue(eventArgs);
         }
 
         /// <summary>
@@ -200,9 +202,9 @@ namespace Microsoft.Azure.WebJobs.Host.Queues
         /// Called to raise the MessageAddedToPoisonQueue event
         /// </summary>
         /// <param name="e">The event arguments</param>
-        protected internal virtual void OnMessageAddedToPoisonQueue(EventArgs e)
+        protected internal virtual void OnMessageAddedToPoisonQueue(PoisonMessageEventArgs e)
         {
-            EventHandler handler = MessageAddedToPoisonQueue;
+            var handler = MessageAddedToPoisonQueue;
             if (handler != null)
             {
                 handler(this, e);

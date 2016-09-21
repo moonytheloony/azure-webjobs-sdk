@@ -129,7 +129,7 @@ namespace Microsoft.Azure.WebJobs.Logging.FunctionalTests
                 await func(table);
                 Assert.True(false); // should have thrown 
             }
-            catch (StorageException e)
+            catch (StorageException)
             {
                 // Success
             }

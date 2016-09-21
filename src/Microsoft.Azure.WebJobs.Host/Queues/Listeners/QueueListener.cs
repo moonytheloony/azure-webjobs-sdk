@@ -80,10 +80,62 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
                 _sharedWatcher = sharedWatcher;
             }
 
-            EventHandler poisonMessageEventHandler = _sharedWatcher != null ? OnMessageAddedToPoisonQueue : (EventHandler)null;
+            EventHandler<PoisonMessageEventArgs> poisonMessageEventHandler = _sharedWatcher != null ? OnMessageAddedToPoisonQueue : (EventHandler<PoisonMessageEventArgs>)null;
             _queueProcessor = CreateQueueProcessor(
                 _queue.SdkObject, _poisonQueue != null ? _poisonQueue.SdkObject : null,
                 _trace, _queueConfiguration, poisonMessageEventHandler);
+        }
+
+        public QueueListener(IStorageQueue queue,
+            ITriggerExecutor<IStorageQueueMessage> triggerExecutor,
+            IDelayStrategy delayStrategy,
+            IWebJobsExceptionHandler exceptionHandler,
+            TraceWriter trace,
+            SharedQueueWatcher sharedWatcher,
+            IQueueConfiguration queueConfiguration,
+            QueueProcessor queueProcessor)
+        {
+            if (trace == null)
+            {
+                throw new ArgumentNullException("trace");
+            }
+
+            if (queueConfiguration == null)
+            {
+                throw new ArgumentNullException("queueConfiguration");
+            }
+
+            if (queueConfiguration.BatchSize <= 0)
+            {
+                throw new ArgumentException("BatchSize must be greater than zero.");
+            }
+
+            if (queueConfiguration.MaxDequeueCount <= 0)
+            {
+                throw new ArgumentException("MaxDequeueCount must be greater than zero.");
+            }
+
+            _timer = new TaskSeriesTimer(this, exceptionHandler, Task.Delay(0));
+            _queue = queue;
+            _triggerExecutor = triggerExecutor;
+            _delayStrategy = delayStrategy;
+            _exceptionHandler = exceptionHandler;
+            _trace = trace;
+            _queueConfiguration = queueConfiguration;
+
+            if (sharedWatcher != null)
+            {
+                // Call Notify whenever a function adds a message to this queue.
+                sharedWatcher.Register(queue.Name, this);
+                _sharedWatcher = sharedWatcher;
+            }
+
+            EventHandler<PoisonMessageEventArgs> poisonMessageEventHandler = _sharedWatcher != null ? OnMessageAddedToPoisonQueue : (EventHandler<PoisonMessageEventArgs>)null;
+            if (poisonMessageEventHandler != null)
+            {
+                queueProcessor.MessageAddedToPoisonQueue += poisonMessageEventHandler;
+            }
+            _queueProcessor = queueProcessor;
         }
 
         public void Cancel()
@@ -271,9 +323,11 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             }
         }
 
-        private void OnMessageAddedToPoisonQueue(object sender, EventArgs e)
+        private void OnMessageAddedToPoisonQueue(object sender, PoisonMessageEventArgs e)
         {
-            _sharedWatcher.Notify(_poisonQueue.Name);
+            // TODO: this is assuming that the poison queue is in the same
+            // storage account
+            _sharedWatcher.Notify(e.PoisonQueue.Name);
         }
 
         private static ITaskSeriesTimer CreateUpdateMessageVisibilityTimer(IStorageQueue queue,
@@ -296,7 +350,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             }
         }
 
-        internal static QueueProcessor CreateQueueProcessor(CloudQueue queue, CloudQueue poisonQueue, TraceWriter trace, IQueueConfiguration queueConfig, EventHandler poisonQueueMessageAddedHandler)
+        internal static QueueProcessor CreateQueueProcessor(CloudQueue queue, CloudQueue poisonQueue, TraceWriter trace, IQueueConfiguration queueConfig, EventHandler<PoisonMessageEventArgs> poisonQueueMessageAddedHandler)
         {
             QueueProcessorFactoryContext context = new QueueProcessorFactoryContext(queue, trace, queueConfig, poisonQueue);
 

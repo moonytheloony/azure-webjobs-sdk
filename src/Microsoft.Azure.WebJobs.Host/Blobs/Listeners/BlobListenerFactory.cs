@@ -151,8 +151,7 @@ namespace Microsoft.Azure.WebJobs.Host.Blobs.Listeners
             string hostId = await _hostIdProvider.GetHostIdAsync(cancellationToken);
             string hostBlobTriggerQueueName = HostQueueNames.GetHostBlobTriggerQueueName(hostId);
             IStorageQueue hostBlobTriggerQueue = queueClient.GetQueueReference(hostBlobTriggerQueueName);
-            IStorageQueue poisonQueue = userQueueClient.GetQueueReference(HostQueueNames.BlobTriggerPoisonQueue);
-
+            
             // Register the blob container we wish to monitor with the shared blob listener.
             await RegisterWithSharedBlobListenerAsync(hostId, sharedBlobListener, blobClient,
                 hostBlobTriggerQueue, sharedQueueWatcher, cancellationToken);
@@ -160,12 +159,12 @@ namespace Microsoft.Azure.WebJobs.Host.Blobs.Listeners
             // Create a "bridge" listener that will monitor the blob
             // notification queue and dispatch to the target job function.
             SharedBlobQueueListener sharedBlobQueueListener = _sharedContextProvider.GetOrCreateInstance<SharedBlobQueueListener>(
-                new SharedBlobQueueListenerFactory(sharedQueueWatcher, hostBlobTriggerQueue, poisonQueue,
+                new SharedBlobQueueListenerFactory(_hostAccount, sharedQueueWatcher, hostBlobTriggerQueue,
                     _queueConfiguration, _exceptionHandler, _trace, sharedBlobListener.BlobWritterWatcher));
             var queueListener = new BlobListener(sharedBlobQueueListener);
 
-            // Register our function with the shared queue listener
-            RegisterWithSharedBlobQueueListenerAsync(sharedBlobQueueListener, userBlobClient);
+            // Register our function with the shared blob queue listener
+            RegisterWithSharedBlobQueueListenerAsync(sharedBlobQueueListener, userBlobClient, userQueueClient);
 
             // check a flag in the shared context to see if we've created the singleton
             // shared blob listener in this host instance
@@ -208,12 +207,14 @@ namespace Microsoft.Azure.WebJobs.Host.Blobs.Listeners
 
         private void RegisterWithSharedBlobQueueListenerAsync(
             SharedBlobQueueListener sharedBlobQueueListener,
-            IStorageBlobClient blobClient)
+            IStorageBlobClient blobClient,
+            IStorageQueueClient queueClient)
         {
             BlobQueueRegistration registration = new BlobQueueRegistration
             {
                 Executor = _executor,
-                BlobClient = blobClient
+                BlobClient = blobClient,
+                QueueClient = queueClient
             };
 
             sharedBlobQueueListener.Register(_functionId, registration);
